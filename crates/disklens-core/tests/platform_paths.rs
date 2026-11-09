@@ -169,10 +169,15 @@ fn guard_rejects_traversal_and_expands_tilde() {
 #[test]
 fn trailing_separator_does_not_bypass_guard() {
     let h = p("/home/zys");
-    let with = is_protected(p("/usr/etc/"), h);
-    let without = is_protected(p("/usr/etc"), h);
-    assert_eq!(with, Some("位于受保护路径内"));
-    assert_eq!(with, without);
+    // unix 形状的路径只在 unix 上有意义（Windows 上 `/usr` 是盘符相对路径）
+    #[cfg(unix)]
+    {
+        let with = is_protected(p("/usr/etc/"), h);
+        let without = is_protected(p("/usr/etc"), h);
+        assert_eq!(with, Some("位于受保护路径内"));
+        assert_eq!(with, without);
+    }
+    // 尾部分隔符在 Windows 形状路径上同样不能绕过
     assert_eq!(
         is_protected(p(r"C:\Windows\System32\"), h),
         is_protected(p(r"C:\Windows\System32"), h)
@@ -181,6 +186,8 @@ fn trailing_separator_does_not_bypass_guard() {
 
 // ───────────── 现有 Linux 规则结果不变（回归锚点） ─────────────
 
+/// 只在 Linux 跑：断言的是「Linux 上 77 条规则的既有行为不被跨平台改动破坏」
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn linux_rule_levels_are_unchanged() {
     let rs = rules();
@@ -231,16 +238,31 @@ fn scan_stats_report_hardlink_dedup_capability() {
         "Unix 按 dev+ino 去重；Windows 稳定版 std 读不到 nlink/file_index，只能不去重"
     );
 }
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[test]
-fn case_insensitive_platforms_fold_case_when_matching() {
+fn macos_matching_is_case_insensitive() {
     let rs = rules();
     assert_eq!(
         rs.classify(p("/HOME/U/.SSH/id_rsa")).level,
         SafetyLevel::Keep
     );
     assert_eq!(
-        rs.classify(p(r"C:\PROJ\APP\NODE_MODULES\x")).level,
+        rs.classify(p("/home/u/app/NODE_MODULES/x.js")).level,
         SafetyLevel::Careful
     );
+}
+
+/// Windows 上 home 必须是 Windows 形状，否则 `~` 展开出来的规则匹配不到任何真实路径
+#[cfg(windows)]
+#[test]
+fn windows_matching_is_case_insensitive_with_windows_home() {
+    let win_home = PathBuf::from(r"C:\Users\u");
+    let rs = RuleSet::default_rules(&win_home);
+    for (path, level) in [
+        (r"C:\Users\u", SafetyLevel::Keep),                    // 石墙：主目录自身
+        (r"C:\Users\u\.ssh\id_rsa", SafetyLevel::Keep),         // ~/.ssh/* 展开后必须命中
+        (r"C:\USERS\U\APP\NODE_MODULES\X.JS", SafetyLevel::Careful), // 大小写折叠 + 分隔符归一化
+    ] {
+        assert_eq!(rs.classify(p(path)).level, level, "{path}");
+    }
 }
