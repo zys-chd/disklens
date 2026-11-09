@@ -12,9 +12,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 快速反馈：核心引擎测试 + 前端类型检查/单测
+  # 三平台跑同一套测试：不仅验证能编译，更要验证行为（路径/分隔符/权限语义各不相同）
   test:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            name: linux
+          - platform: windows-latest
+            name: windows
+          - platform: macos-14
+            name: macos
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,12 +34,15 @@ jobs:
           cache-dependency-path: app/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
       - name: linux webkit deps
+        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: rust tests
-        run: cargo test --workspace --exclude disklens
+      - name: rust tests (core)
+        run: cargo test -p disklens-core
       - name: frontend checks
         working-directory: app
         run: |
