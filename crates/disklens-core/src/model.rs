@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::rules::Safety;
+
 pub type NodeId = u32;
 pub const NO_PARENT: NodeId = u32::MAX;
 
@@ -55,6 +57,8 @@ pub struct Tree {
     pub exts: Vec<Box<str>>,
     pub ext_stats: Vec<ExtStat>,
     pub stats: ScanStats,
+    /// 与 nodes 同索引的安全等级；未分类时为空/未知，用 `classify_tree` 填充
+    pub safety: Vec<Safety>,
 }
 
 impl Tree {

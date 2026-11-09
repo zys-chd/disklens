@@ -120,6 +120,7 @@ pub fn scan_with<F: FnMut(Progress)>(
             errors,
             cancelled: b.cancelled,
         },
+        safety: Vec::new(),
     };
     aggregate_tree(&mut tree);
     Ok(tree)

@@ -5,6 +5,7 @@ pub mod guard;
 pub mod model;
 pub mod ops;
 pub mod query;
+pub mod rules;
 pub mod scan;
 pub mod snapshot;
 
@@ -15,6 +16,10 @@ pub use ops::{delete_permanent, move_to_trash, OpFailure, OpResult};
 pub use query::{
     children, node_path, top_files, type_stats, ChildPage, ChildQuery, SortBy, TopFile, TypeStat,
     MAX_LIMIT,
+};
+pub use rules::{
+    classify_tree, default_rules, default_rules_path, safety_stats, Rule, RuleSet, Safety,
+    SafetyLevel, SafetyReport, SafetyStat, NO_RULE,
 };
 pub use scan::{scan, scan_with, Progress, ScanError, ScanOptions};
 pub use snapshot::{

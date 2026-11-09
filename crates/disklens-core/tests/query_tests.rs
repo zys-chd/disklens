@@ -58,6 +58,7 @@ fn synthetic(mut children_nodes: Vec<Node>) -> Tree {
         exts: vec!["".into()],
         ext_stats: vec![ExtStat::default()],
         stats: ScanStats::default(),
+        safety: Vec::new(),
     };
     aggregate(&mut tree.nodes);
     tree
