@@ -48,6 +48,8 @@ fn wait_tree(w: &WebviewWindow<MockRuntime>, scan_id: &str) -> Value {
 fn ipc_contract_roundtrip() {
     let data = tempfile::tempdir().unwrap();
     std::env::set_var("XDG_DATA_HOME", data.path());
+    // 扫描会写 rules.json 到 config_dir，别污染真实用户配置
+    std::env::set_var("XDG_CONFIG_HOME", data.path());
 
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("big.bin"), vec![0u8; 1_500_000]).unwrap();
@@ -82,6 +84,28 @@ fn ipc_contract_roundtrip() {
     assert_eq!(items[0]["kind"], "file");
     assert_eq!(items[0]["hasChildren"], false);
     assert!(items[0].get("errorCount").is_some());
+    // 分级：扫描完成后节点自带 safety，汇总接口可用
+    let level = items[0]["safety"].as_str().expect("扫描后节点应带 safety");
+    assert!(
+        matches!(level, "safe" | "careful" | "keep" | "unknown"),
+        "{level}"
+    );
+    let stats = invoke(&w, "safety_stats", json!({ "scanId": scan_id })).unwrap();
+    assert!(stats["safeBytes"].is_u64() && stats["carefulBytes"].is_u64());
+    assert!(stats["stats"].is_array());
+    let safe_only = invoke(
+        &w,
+        "list_children",
+        json!({
+            "scanId": scan_id, "nodeId": 0,
+            "sortBy": "size", "desc": true, "offset": 0, "limit": 50,
+            "safety": ["safe"]
+        }),
+    )
+    .unwrap();
+    for it in safe_only["items"].as_array().unwrap() {
+        assert_eq!(it["safety"], "safe");
+    }
 
     // get_node / node_path / top_files / type_stats
     let node = invoke(&w, "get_node", json!({ "scanId": scan_id, "nodeId": 0 })).unwrap();

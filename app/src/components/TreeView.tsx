@@ -4,6 +4,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useScanStore } from '../store/scanStore'
 import { flattenRows, type Row } from '../lib/tree'
 import { formatBytes, formatCount, formatMtime } from '../lib/format'
+import { safetyDot, safetyTitle } from '../lib/safety'
+import { SafetyBar } from './SafetyBar'
 import type { NodeView, SortBy } from '../lib/types'
 import { ChevronRight, FileIcon, FolderIcon } from './icons'
 import { Button, Empty, Spinner } from './ui'
@@ -89,6 +91,7 @@ export function TreeView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <SafetyBar />
       <div className={`${GRID} h-7 shrink-0 border-b border-line bg-panel2 pr-2 text-[11px] text-muted`}>
         {SORTS.map((s) => (
           <button
@@ -197,13 +200,16 @@ function TreeRow({
   const { node, depth } = row
   const isDir = node.kind === 'dir'
   const ratio = parentSize > 0 ? Math.min(100, (node.size / parentSize) * 100) : 0
+  const safetyTip = safetyTitle(node)
 
   return (
     <div
       role="row"
       aria-selected={selected}
       tabIndex={0}
-      title={`${node.name}\n${formatBytes(node.size)} · ${formatCount(node.files)} 个文件`}
+      title={[node.name, `${formatBytes(node.size)} · ${formatCount(node.files)} 个文件`, safetyTip]
+        .filter(Boolean)
+        .join('\n')}
       style={style}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
@@ -230,10 +236,21 @@ function TreeRow({
         >
           <ChevronRight size={11} className={expanded ? 'rotate-90 transition-transform' : 'transition-transform'} />
         </button>
+        {node.safety && (
+          <span
+            className={`mr-1 h-2 w-2 shrink-0 rounded-full ${safetyDot(node)}`}
+            title={safetyTip}
+            aria-label={node.safety}
+          />
+        )}
         <span className={`mr-1.5 shrink-0 ${isDir ? 'text-accent' : 'text-muted/70'}`}>
           {isDir ? <FolderIcon size={13} /> : <FileIcon size={13} />}
         </span>
-        <span className={`truncate ${isDir ? 'font-medium' : 'text-fg/90'}`}>{node.name}</span>
+        <span
+          className={`truncate ${isDir ? 'font-medium' : 'text-fg/90'} ${node.safety === 'keep' ? 'opacity-60' : ''}`}
+        >
+          {node.name}
+        </span>
         {node.kind === 'symlink' && <span className="ml-1 shrink-0 text-[10px] text-muted">link</span>}
       </div>
 

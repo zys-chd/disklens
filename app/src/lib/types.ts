@@ -1,6 +1,8 @@
 // IPC 契约镜像 —— 与 docs/03-架构设计.md §4 逐字一致。
 export type NodeKind = 'dir' | 'file' | 'symlink'
 
+export type SafetyLevel = 'safe' | 'careful' | 'keep' | 'unknown'
+
 export interface NodeView {
   id: number
   name: string
@@ -12,6 +14,27 @@ export interface NodeView {
   kind: NodeKind
   hasChildren: boolean
   errorCount: number
+  /** 分级字段可缺失：未分类的树保持旧契约 */
+  safety?: SafetyLevel
+  safetyCategory?: string
+  safetyReason?: string
+  safetyMethod?: string
+  safetyNeedsRoot?: boolean
+  safetyCommand?: string
+}
+
+export interface SafetyStat {
+  category: string
+  level: SafetyLevel
+  bytes: number
+  files: number
+  count: number
+}
+
+export interface SafetyReport {
+  stats: SafetyStat[]
+  safeBytes: number
+  carefulBytes: number
 }
 
 export interface Drive {
@@ -97,6 +120,8 @@ export interface ListChildrenArgs {
   limit: number
   minSize?: number
   filter?: string
+  safety?: SafetyLevel[]
+  maxLevel?: SafetyLevel
 }
 
 export interface PlatformInfo {
@@ -115,10 +140,12 @@ export interface Backend {
   nodePath(scanId: string, nodeId: number): Promise<string>
   topFiles(scanId: string, limit: number, minSize?: number): Promise<TopFile[]>
   typeStats(scanId: string, topN: number): Promise<TypeStat[]>
+  safetyStats(scanId: string): Promise<SafetyReport>
   saveSnapshot(scanId: string): Promise<{ path: string }>
   listSnapshots(): Promise<SnapshotInfo[]>
   diffSnapshots(aPath: string, bPath: string, limit: number): Promise<DiffResult>
   openPath(path: string, reveal?: boolean): Promise<void>
+  openRulesFile(): Promise<void>
   moveToTrash(paths: string[]): Promise<OpResult>
   deletePermanent(paths: string[], confirmText: string): Promise<OpResult>
   platformInfo(): Promise<PlatformInfo>

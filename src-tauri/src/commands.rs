@@ -6,9 +6,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use disklens_core::{
-    children, diff_snapshots as diff, list_snapshots as list_snaps, load_snapshot, move_to_trash as trash,
-    node_path as core_node_path, save_snapshot as save_snap, scan_with, top_files as core_top_files,
-    type_stats as core_type_stats, ChildQuery, NodeId, NodeKind, OpResult, ScanOptions, SortBy, Tree,
+    children, classify_tree, default_rules_path, diff_snapshots as diff,
+    list_snapshots as list_snaps, load_snapshot, move_to_trash as trash, node_path as core_node_path,
+    safety_stats as core_safety_stats, save_snapshot as save_snap, scan_with,
+    top_files as core_top_files, type_stats as core_type_stats, ChildQuery, NodeId, NodeKind,
+    OpResult, RuleSet, SafetyLevel, SafetyReport, ScanOptions, SortBy, Tree, MAX_LIMIT,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -34,10 +36,28 @@ pub struct NodeView {
     kind: NodeKind,
     has_children: bool,
     error_count: u32,
+    // 分级字段可缺失：未分类的树（或旧客户端）保持原契约不变
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safety: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safety_category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safety_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safety_method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safety_needs_root: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safety_command: Option<String>,
 }
 
-fn view(tree: &Tree, id: NodeId) -> NodeView {
+fn view(tree: &Tree, id: NodeId, rules: Option<&RuleSet>) -> NodeView {
     let n = tree.node(id);
+    let safety = tree.safety.get(id as usize).copied();
+    // rule_idx 只回查字典，category/reason 不重复存在每个节点里
+    let rule = safety
+        .and_then(|s| s.rule_idx())
+        .and_then(|i| rules?.rule_at(i));
     NodeView {
         id,
         name: n.name.to_string(),
@@ -49,6 +69,12 @@ fn view(tree: &Tree, id: NodeId) -> NodeView {
         kind: n.kind,
         has_children: !n.children.is_empty(),
         error_count: n.error_count,
+        safety: safety.map(|s| s.level.as_str()),
+        safety_category: rule.map(|r| r.category.clone()),
+        safety_reason: rule.map(|r| r.reason.clone()),
+        safety_method: rule.map(|r| r.method.clone()).filter(|m| !m.is_empty()),
+        safety_needs_root: rule.map(|r| r.needs_root),
+        safety_command: rule.map(|r| r.suggest_cmd.clone()).filter(|c| !c.is_empty()),
     }
 }
 
@@ -185,16 +211,23 @@ pub fn start_scan<R: tauri::Runtime>(
             }
         });
         match result {
-            Ok(tree) => {
+            Ok(mut tree) => {
+                // 分类 ~15ms/6.6 万节点，不拖慢扫描；规则文件损坏时 load_or_create 已回退默认
+                let rules = Arc::new(RuleSet::load_or_create(
+                    &default_rules_path(),
+                    &dirs::home_dir().unwrap_or_default(),
+                ));
+                classify_tree(&mut tree, &rules);
                 let tree = Arc::new(tree);
-                // 先落树再发 done：前端收到 done 会立刻 list_children
+                // 先落规则再落树，再发 done：前端收到 done 会立刻 list_children
+                *rec.rules.write().expect("rules poisoned") = Some(rules.clone());
                 *rec.tree.write().expect("tree poisoned") = Some(tree.clone());
                 let _ = app_thread.emit(
                     "scan://done",
                     ScanSummary {
                         scan_id: thread_id.clone(),
                         root_path: tree.root_path.to_string_lossy().into_owned(),
-                        root: view(&tree, tree.root),
+                        root: view(&tree, tree.root, Some(&rules)),
                         elapsed_ms: tree.stats.elapsed_ms,
                         entries: tree.stats.entries,
                         errors: tree.stats.errors,
@@ -226,6 +259,12 @@ pub fn cancel_scan(state: State<'_, AppState>, scan_id: String) -> Result<(), St
 
 // ---------- 查询 ----------
 
+/// 安全过滤：allow 为空表示不限制等级；max 为「最差到哪一级」（keep 几乎放行全部）。
+fn level_kept(level: SafetyLevel, allow: &[SafetyLevel], max: Option<SafetyLevel>) -> bool {
+    (allow.is_empty() || allow.contains(&level)) && max.is_none_or(|m| level.order() <= m.order())
+}
+
+#[allow(clippy::too_many_arguments)] // 参数个数由 IPC 契约决定
 #[tauri::command(async, rename_all = "camelCase")]
 pub fn list_children(
     state: State<'_, AppState>,
@@ -237,22 +276,53 @@ pub fn list_children(
     limit: usize,
     min_size: Option<u64>,
     filter: Option<String>,
+    safety: Option<Vec<String>>,
+    max_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let tree = state.tree(&scan_id)?;
     if tree.nodes.get(node_id as usize).is_none() {
         return Err(format!("节点不存在: {node_id}"));
     }
+    let rules = state.rules(&scan_id)?;
+    let allow: Vec<SafetyLevel> = safety
+        .unwrap_or_default()
+        .iter()
+        .map(|s| SafetyLevel::parse(s))
+        .collect();
+    let max = max_level.as_deref().map(SafetyLevel::parse);
+    // core 的 children() 不认识 safety：过滤时先取全量，过滤后再分页，total 才准。
+    // shortcut: 单目录 >5000 个子项时安全过滤只覆盖前 5000 条，等 core 支持分级再改。
+    let filtered = !allow.is_empty() || max.is_some();
     let q = ChildQuery {
         sort_by,
         desc,
-        offset,
-        limit,
+        offset: if filtered { 0 } else { offset },
+        limit: if filtered { MAX_LIMIT } else { limit },
         min_size,
         filter,
     };
     let page = children(&tree, node_id, &q);
-    let items: Vec<NodeView> = page.items.iter().map(|&id| view(&tree, id)).collect();
-    Ok(json!({ "total": page.total, "items": items }))
+    let mut ids: Vec<NodeId> = page
+        .items
+        .into_iter()
+        .filter(|&id| {
+            let lv = tree
+                .safety
+                .get(id as usize)
+                .map_or(SafetyLevel::Unknown, |s| s.level);
+            level_kept(lv, &allow, max)
+        })
+        .collect();
+    let total = if filtered { ids.len() } else { page.total };
+    if filtered {
+        ids = ids
+            .into_iter()
+            .skip(offset)
+            .take(limit.min(MAX_LIMIT))
+            .collect();
+    }
+    let items: Vec<NodeView> = ids.iter().map(|&id| view(&tree, id, Some(&rules))).collect();
+    Ok(json!({ "total": total, "items": items }))
 }
 
 #[tauri::command(async, rename_all = "camelCase")]
@@ -265,7 +335,18 @@ pub fn get_node(
     if tree.nodes.get(node_id as usize).is_none() {
         return Err(format!("节点不存在: {node_id}"));
     }
-    Ok(view(&tree, node_id))
+    let rules = state.rules(&scan_id).ok();
+    Ok(view(&tree, node_id, rules.as_deref()))
+}
+
+#[tauri::command(async, rename_all = "camelCase")]
+pub fn safety_stats(
+    state: State<'_, AppState>,
+    scan_id: String,
+) -> Result<SafetyReport, String> {
+    let tree = state.tree(&scan_id)?;
+    let rules = state.rules(&scan_id)?;
+    Ok(core_safety_stats(&tree, &rules))
 }
 
 #[tauri::command(async, rename_all = "camelCase")]
@@ -331,6 +412,17 @@ pub fn open_path(path: String, reveal: Option<bool>) -> Result<(), String> {
     crate::open::open_path(Path::new(&path), reveal.unwrap_or(false))
 }
 
+/// 打开 rules.json（不存在则先写出默认规则，方便用户改）。只打开，不执行任何命令。
+#[tauri::command(async)]
+pub fn open_rules_file() -> Result<(), String> {
+    let path = default_rules_path();
+    if !path.exists() {
+        let home = dirs::home_dir().unwrap_or_default();
+        RuleSet::load_or_create(&path, &home);
+    }
+    crate::open::open_path(&path, false)
+}
+
 /// 护栏在 disklens_core::ops 内部（is_protected），前端传什么都绕不过去。
 #[tauri::command(async)]
 pub fn move_to_trash(paths: Vec<String>) -> Result<OpResult, String> {
@@ -372,6 +464,7 @@ pub fn pick_folder<R: tauri::Runtime>(app: AppHandle<R>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use disklens_core::{classify_tree, Rule};
 
     /// 契约镜像：字段名/类型必须与 app/src/lib/types.ts 的 NodeView 逐字一致。
     #[test]
@@ -380,7 +473,7 @@ mod tests {
         std::fs::write(dir.path().join("a.bin"), vec![7u8; 1024]).unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let tree = disklens_core::scan(dir.path(), &ScanOptions::default()).unwrap();
-        let json = serde_json::to_value(view(&tree, tree.root)).unwrap();
+        let json = serde_json::to_value(view(&tree, tree.root, None)).unwrap();
 
         let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
@@ -397,7 +490,8 @@ mod tests {
                 "name",
                 "ownSize",
                 "size"
-            ]
+            ],
+            "未分类的树不应出现 safety 字段（向后兼容）"
         );
         assert_eq!(json["kind"], "dir");
         assert_eq!(json["id"], 0);
@@ -405,5 +499,46 @@ mod tests {
         assert_eq!(json["files"], 1);
         assert_eq!(json["dirs"], 1);
         assert_eq!(json["hasChildren"], true);
+    }
+
+    #[test]
+    fn classified_node_view_carries_safety_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), vec![7u8; 1024]).unwrap();
+        let mut tree = disklens_core::scan(dir.path(), &ScanOptions::default()).unwrap();
+        let pattern = format!("{}/*", dir.path().display());
+        let rs = RuleSet::new(
+            vec![Rule::new(
+                &pattern,
+                "测试缓存",
+                SafetyLevel::Safe,
+                "可整目录删除",
+            )],
+            dir.path(),
+        );
+        classify_tree(&mut tree, &rs);
+
+        let json = serde_json::to_value(view(&tree, tree.root, Some(&rs))).unwrap();
+        assert_eq!(json["safety"], "unknown", "根自身不匹配 dir/*");
+        let file = (0..tree.nodes.len())
+            .find(|&i| tree.nodes[i].name.as_ref() == "a.bin")
+            .unwrap() as NodeId;
+        let json = serde_json::to_value(view(&tree, file, Some(&rs))).unwrap();
+        assert_eq!(json["safety"], "safe");
+        assert_eq!(json["safetyCategory"], "测试缓存");
+        assert_eq!(json["safetyReason"], "可整目录删除");
+        assert!(json.get("safetyCommand").is_none(), "空命令不应占字段");
+    }
+
+    #[test]
+    fn safety_filter_allow_list_and_max_level() {
+        use SafetyLevel::{Careful as C, Keep as K, Safe as S, Unknown as U};
+        assert!(level_kept(S, &[S], None));
+        assert!(!level_kept(U, &[S], None));
+        assert!(level_kept(C, &[], Some(C)), "max=careful 放行 safe/careful");
+        assert!(level_kept(S, &[], Some(C)));
+        assert!(!level_kept(K, &[], Some(C)));
+        assert!(level_kept(S, &[S, C], Some(C)));
+        assert!(level_kept(K, &[], None), "无过滤时全放行");
     }
 }

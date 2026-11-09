@@ -90,6 +90,17 @@ export function ContextMenu() {
         <CopyIcon size={13} className="text-muted" />
         复制名称
       </button>
+      {node.safetyCommand && (
+        <button
+          type="button"
+          className={itemClass}
+          title={node.safetyCommand}
+          onClick={() => void copy(node.safetyCommand ?? '')}
+        >
+          <CopyIcon size={13} className="text-muted" />
+          复制建议命令
+        </button>
+      )}
     </div>
   )
 }

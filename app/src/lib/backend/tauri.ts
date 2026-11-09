@@ -11,6 +11,7 @@ import type {
   ScanOptions,
   ScanProgress,
   ScanSummary,
+  SafetyReport,
   SnapshotInfo,
   TopFile,
   TypeStat,
@@ -41,11 +42,13 @@ export const tauriBackend: Backend = {
   topFiles: (scanId: string, limit: number, minSize?: number) =>
     invoke<TopFile[]>('top_files', { scanId, limit, minSize }),
   typeStats: (scanId: string, topN: number) => invoke<TypeStat[]>('type_stats', { scanId, topN }),
+  safetyStats: (scanId: string) => invoke<SafetyReport>('safety_stats', { scanId }),
   saveSnapshot: (scanId: string) => invoke<{ path: string }>('save_snapshot', { scanId }),
   listSnapshots: () => invoke<SnapshotInfo[]>('list_snapshots'),
   diffSnapshots: (aPath: string, bPath: string, limit: number) =>
     invoke<DiffResult>('diff_snapshots', { aPath, bPath, limit }),
   openPath: (path: string, reveal = false) => invoke<void>('open_path', { path, reveal }),
+  openRulesFile: () => invoke<void>('open_rules_file'),
   moveToTrash: (paths: string[]) => invoke<OpResult>('move_to_trash', { paths }),
   deletePermanent: (paths: string[], confirmText: string) =>
     invoke<OpResult>('delete_permanent', { paths, confirmText }),

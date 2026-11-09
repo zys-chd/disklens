@@ -59,6 +59,7 @@ export function childKey(
   desc: boolean,
   filter: string,
   minSize: number,
+  onlySafe = false,
 ): string {
-  return `${nodeId}:${sortBy}:${desc}:${filter}:${minSize}`
+  return `${nodeId}:${sortBy}:${desc}:${filter}:${minSize}:${onlySafe}`
 }

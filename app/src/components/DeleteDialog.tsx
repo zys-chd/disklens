@@ -2,14 +2,18 @@ import { useEffect, useState } from 'react'
 import { useScanStore } from '../store/scanStore'
 import { basename, confirmValid } from '../lib/delete'
 import { formatBytes } from '../lib/format'
-import { CheckIcon, TrashIcon, XIcon } from './icons'
+import { SAFETY_DOT, SAFETY_LABEL, riskyItems } from '../lib/safety'
+import { CheckIcon, CopyIcon, TrashIcon, XIcon } from './icons'
 import { Button, Modal } from './ui'
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 export function DeleteDialog() {
   const dialog = useScanStore((s) => s.dialog)
   const close = useScanStore((s) => s.closeDialog)
   const runDelete = useScanStore((s) => s.runDelete)
   const retryFailed = useScanStore((s) => s.retryFailed)
+  const notify = useScanStore((s) => s.notify)
   const [text, setText] = useState('')
 
   useEffect(() => {
@@ -26,6 +30,20 @@ export function DeleteDialog() {
   const okSet = new Set(results?.ok ?? [])
   const failMap = new Map((results?.failed ?? []).map((f) => [f.path, f.error]))
   const failedCount = results?.failed.length ?? 0
+  const risky = results ? [] : riskyItems(items)
+  const blocked = risky.filter((i) => i.safety === 'keep')
+  const commands = results ? [] : items.filter((i) => i.safetyCommand)
+  const needsRoot = commands.some((i) => i.safetyNeedsRoot)
+
+  const copy = async (text: string) => {
+    try {
+      if (!navigator.clipboard) throw new Error('剪贴板不可用')
+      await navigator.clipboard.writeText(text)
+      notify('success', '已复制建议命令')
+    } catch (e) {
+      notify('error', errMsg(e))
+    }
+  }
 
   return (
     <Modal
@@ -98,6 +116,49 @@ export function DeleteDialog() {
           )
         })}
       </div>
+
+      {risky.length > 0 && (
+        <div className="mt-3 rounded-md border border-warn/30 bg-warn/5 px-2.5 py-2 text-xs">
+          <div className="text-warn">
+            ⚠ {risky.length} 项不是安全级，删除前请确认
+            {blocked.length > 0 && ` · 其中 ${blocked.length} 项后端会直接拒绝`}
+          </div>
+          <ul className="mt-1 max-h-24 space-y-0.5 overflow-auto">
+            {risky.map((i) => (
+              <li key={i.id} className="flex items-start gap-1.5 text-[11px] text-muted">
+                <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${SAFETY_DOT[i.safety ?? 'unknown']}`} />
+                <span className="shrink-0 text-fg/80">{i.name}</span>
+                <span className="min-w-0 truncate">{i.safetyReason ?? SAFETY_LABEL[i.safety ?? 'unknown']}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {commands.length > 0 && (
+        <div className="mt-3 rounded-md border border-line bg-panel2 px-2.5 py-2 text-[11px] text-muted">
+          <div className="mb-1 font-medium text-fg/80">建议命令（复制后自行在终端执行）</div>
+          {commands.map((i) => (
+            <div key={i.id} className="mb-1 flex items-center gap-2 last:mb-0">
+              <code
+                className="min-w-0 flex-1 truncate rounded bg-bg px-1.5 py-0.5 font-mono text-[10px] text-fg/80"
+                title={i.safetyCommand}
+              >
+                {i.safetyCommand}
+              </code>
+              <button
+                type="button"
+                onClick={() => void copy(i.safetyCommand ?? '')}
+                className="flex shrink-0 items-center gap-1 text-accent hover:underline"
+              >
+                <CopyIcon size={11} />
+                复制
+              </button>
+            </div>
+          ))}
+          {needsRoot && <div className="mt-1 text-[10px] text-warn">含 sudo，需要管理员权限</div>}
+        </div>
+      )}
 
       {!results && (
         <div className="mt-3">

@@ -6,6 +6,8 @@ import type {
   Drive,
   NodeView,
   OpResult,
+  SafetyLevel,
+  SafetyReport,
   ScanProgress,
   ScanSummary,
   SortBy,
@@ -17,7 +19,22 @@ export interface SelItem {
   id: number
   name: string
   size: number
+  safety?: SafetyLevel
+  safetyReason?: string
+  safetyCommand?: string
+  safetyNeedsRoot?: boolean
 }
+
+/** 选中项带上分级，删除对话框才能提前警示。 */
+const selOf = (n: NodeView): SelItem => ({
+  id: n.id,
+  name: n.name,
+  size: n.size,
+  safety: n.safety,
+  safetyReason: n.safetyReason,
+  safetyCommand: n.safetyCommand,
+  safetyNeedsRoot: n.safetyNeedsRoot,
+})
 
 export interface DialogState {
   mode: DeleteMode
@@ -49,6 +66,8 @@ interface ScanState {
   desc: boolean
   filter: string
   minSize: number
+  onlySafe: boolean
+  safety: SafetyReport | null
   selection: Record<number, SelItem>
   lastSelectedId: number | null
   chain: NodeView[]
@@ -70,6 +89,8 @@ interface ScanState {
   setSort(sortBy: SortBy): Promise<void>
   setFilter(filter: string): Promise<void>
   setMinSize(minSize: number): Promise<void>
+  setOnlySafe(only: boolean): Promise<void>
+  loadSafety(): Promise<void>
   focusNode(node: NodeView, scroll?: boolean, chainOverride?: NodeView[]): Promise<void>
   selectNode(node: NodeView, mode: 'single' | 'toggle' | 'range', rows: Row[]): void
   clearSelection(): void
@@ -140,6 +161,8 @@ export const useScanStore = create<ScanState>()((set, get) => ({
   desc: true,
   filter: '',
   minSize: 0,
+  onlySafe: false,
+  safety: null,
   selection: {},
   lastSelectedId: null,
   chain: [],
@@ -175,7 +198,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
       })
       if (summary.cancelled) get().notify('warn', '扫描已取消，展示已扫到的部分')
       await get().ensureChildren(0)
-      await Promise.all([get().loadTop(), get().loadTypes()])
+      await Promise.all([get().loadTop(), get().loadTypes(), get().loadSafety()])
     })
     backend.onError((e) => {
       if (e.scanId !== get().scanId) return
@@ -213,6 +236,8 @@ export const useScanStore = create<ScanState>()((set, get) => ({
       contextMenu: null,
       topFiles: [],
       typeStats: [],
+      safety: null,
+      onlySafe: false,
     })
     try {
       const { scanId } = await backend.startScan(target)
@@ -233,14 +258,14 @@ export const useScanStore = create<ScanState>()((set, get) => ({
   },
 
   keyFor: (nodeId) => {
-    const { sortBy, desc, filter, minSize } = get()
-    return childKey(nodeId, sortBy, desc, filter, minSize)
+    const { sortBy, desc, filter, minSize, onlySafe } = get()
+    return childKey(nodeId, sortBy, desc, filter, minSize, onlySafe)
   },
 
   ensureChildren: async (nodeId) => {
-    const { scanId, sortBy, desc, filter, minSize } = get()
+    const { scanId, sortBy, desc, filter, minSize, onlySafe } = get()
     if (!scanId) return
-    const key = childKey(nodeId, sortBy, desc, filter, minSize)
+    const key = childKey(nodeId, sortBy, desc, filter, minSize, onlySafe)
     if (get().children[key] !== undefined || get().loading.has(key)) return
     set((s) => ({ loading: new Set(s.loading).add(key) }))
     try {
@@ -253,6 +278,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
         limit: 5000,
         filter: filter || undefined,
         minSize: minSize || undefined,
+        safety: onlySafe ? ['safe'] : undefined,
       })
       if (get().scanId !== scanId) return
       set((s) => {
@@ -308,6 +334,23 @@ export const useScanStore = create<ScanState>()((set, get) => ({
     await get().reloadChildren()
   },
 
+  setOnlySafe: async (onlySafe) => {
+    if (onlySafe === get().onlySafe) return
+    set({ onlySafe, scrollTarget: null })
+    await get().reloadChildren()
+  },
+
+  loadSafety: async () => {
+    const { scanId } = get()
+    if (!scanId) return
+    try {
+      const report = await backend.safetyStats(scanId)
+      if (get().scanId === scanId) set({ safety: report })
+    } catch (e) {
+      get().notify('error', errMsg(e))
+    }
+  },
+
   focusNode: async (node, scroll = false, chainOverride) => {
     const root = get().summary?.root
     let chain: NodeView[] | null = chainOverride ?? null
@@ -327,7 +370,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
   },
 
   selectNode: (node, mode, rows) => {
-    const item: SelItem = { id: node.id, name: node.name, size: node.size }
+    const item = selOf(node)
     if (mode === 'single') {
       set({ selection: { [node.id]: item }, lastSelectedId: node.id })
       return
@@ -349,7 +392,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
     const selection: Record<number, SelItem> = {}
     for (let i = a; i <= b; i++) {
       const n = rows[i].node
-      selection[n.id] = { id: n.id, name: n.name, size: n.size }
+      selection[n.id] = selOf(n)
     }
     set({ selection })
   },
@@ -388,7 +431,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
       expanded,
       scrollTarget: cur.id,
       ...(isFile
-        ? { selection: { [cur.id]: { id: cur.id, name: cur.name, size: cur.size } }, lastSelectedId: cur.id }
+        ? { selection: { [cur.id]: selOf(cur) }, lastSelectedId: cur.id }
         : {}),
     })
   },

@@ -7,6 +7,9 @@ import type {
   NodeView,
   OpResult,
   PlatformInfo,
+  SafetyLevel,
+  SafetyReport,
+  SafetyStat,
   ScanOptions,
   ScanProgress,
   ScanSummary,
@@ -32,6 +35,15 @@ function mulberry32(seed: number): () => number {
   }
 }
 
+interface SafetyInfo {
+  level: SafetyLevel
+  category: string
+  reason: string
+  method: string
+  needsRoot?: boolean
+  command?: string
+}
+
 interface MNode {
   id: number
   name: string
@@ -44,6 +56,51 @@ interface MNode {
   mtime: number
   children: number[]
   errorCount: number
+  safety?: SafetyInfo
+}
+
+const LEVEL_ORDER: Record<SafetyLevel, number> = { safe: 0, careful: 1, unknown: 2, keep: 3 }
+
+/** 与 core 默认规则同序的极简分类器：命中祖先的规则对后代继承。 */
+function mockSafety(chain: string[]): SafetyInfo {
+  const last = chain[chain.length - 1]
+  const has = (n: string) => chain.includes(n)
+  const info = (level: SafetyLevel, category: string, reason: string, method = '可整目录删除'): SafetyInfo => ({
+    level,
+    category,
+    reason,
+    method,
+  })
+  if (chain.length === 1) return info('keep', '石墙', '石墙：用户主目录', '不要动')
+  if (last === '__pycache__' || last === '.pytest_cache') return info('safe', 'Python 缓存', '字节码缓存，自动重新生成', '可批量删除')
+  if (has('node_modules')) return info('careful', '前端依赖', 'npm 依赖，删除后需重新 npm install', '确认可重装后再删')
+  if (has('site-packages') || last === 'venv') return info('careful', 'Python 虚拟环境', '虚拟环境依赖，应删整个 venv 而非此目录')
+  if (has('target') && has('debug')) return info('careful', '构建产物', 'Rust 调试产物（cargo clean 更安全）', 'cargo clean')
+  if (last === 'dist' || last === 'build') return info('careful', '构建产物', '构建输出，可重新构建', '按需清理')
+  if (has('.cache')) {
+    if (has('electron')) return info('careful', '开发工具缓存', 'Electron 二进制缓存', '需重新下载')
+    if (has('thumbnails')) return info('safe', '缩略图缓存', '文件管理器缩略图，自动重建')
+    if (has('pip')) return { ...info('safe', '包管理器缓存', 'pip 下载缓存'), command: 'pip cache purge' }
+    if (has('mozilla')) return info('safe', '浏览器缓存', 'Firefox 缓存')
+    return info('safe', '应用缓存', '通用应用缓存，删除后自动重建')
+  }
+  if (has('.local') && has('Steam')) return info('keep', '游戏数据', '已安装游戏，删除需重新下载数十 GB', '如需空间请整体迁移')
+  if (has('.hermes')) return info('keep', 'Hermes 数据', 'Hermes 本体/配置/状态库', '不要动')
+  if (has('.config')) return info('keep', '配置', '程序配置（含登录态）', '不要动')
+  if (has('.ssh')) return info('keep', '密钥', 'SSH 密钥', '不要动')
+  if (has('Projects')) return info('keep', '用户代码', '项目源码（构建产物另按规则处理）', '不要动')
+  if (has('Downloads')) return info('unknown', '下载', '下载目录内容需人工判断', '导出明细后人工核对')
+  return info('keep', '用户数据', '本地用户数据', '不要动')
+}
+
+function chainOf(nodes: MNode[], id: number): string[] {
+  const parts: string[] = []
+  let cur: MNode | undefined = nodes[id]
+  while (cur) {
+    parts.push(cur.name)
+    cur = cur.parent >= 0 ? nodes[cur.parent] : undefined
+  }
+  return parts.reverse()
 }
 
 function basename(path: string): string {
@@ -321,6 +378,8 @@ export class MockBackend implements Backend {
 
   constructor(opts: { seed?: number; targetNodes?: number; scanMs?: number; defaultPath?: string } = {}) {
     this.nodes = buildTemplate(opts.targetNodes ?? 20000)
+    // 一次算完，避免每次 view() 都走祖先链
+    for (const n of this.nodes) n.safety = mockSafety(chainOf(this.nodes, n.id))
     this.scanMs = opts.scanMs ?? 2500
     this.defaultPath = opts.defaultPath ?? ROOT_PATH
   }
@@ -414,6 +473,7 @@ export class MockBackend implements Backend {
   }
 
   private view(n: MNode): NodeView {
+    const s = n.safety
     return {
       id: n.id,
       name: n.name,
@@ -425,6 +485,16 @@ export class MockBackend implements Backend {
       kind: n.kind,
       hasChildren: n.kind === 'dir' && n.children.length > 0,
       errorCount: n.errorCount,
+      ...(s
+        ? {
+            safety: s.level,
+            safetyCategory: s.category,
+            safetyReason: s.reason,
+            safetyMethod: s.method,
+            ...(s.needsRoot ? { safetyNeedsRoot: true } : {}),
+            ...(s.command ? { safetyCommand: s.command } : {}),
+          }
+        : {}),
     }
   }
 
@@ -438,9 +508,15 @@ export class MockBackend implements Backend {
     if (!parent) throw new Error('node not found')
     const filter = (args.filter ?? '').toLowerCase()
     const minSize = args.minSize ?? 0
+    const allow = args.safety ?? []
+    const max = args.maxLevel
+    const levelOk = (n: MNode): boolean => {
+      const lv = n.safety?.level ?? 'unknown'
+      return (allow.length === 0 || allow.includes(lv)) && (!max || LEVEL_ORDER[lv] <= LEVEL_ORDER[max])
+    }
     let items = parent.children
       .map((id) => this.nodes[id])
-      .filter((n) => (!filter || n.name.toLowerCase().includes(filter)) && n.size >= minSize)
+      .filter((n) => (!filter || n.name.toLowerCase().includes(filter)) && n.size >= minSize && levelOk(n))
     const dir = args.desc ? -1 : 1
     const sortBy: SortBy = args.sortBy ?? 'size'
     items = [...items].sort((a, b) => {
@@ -517,6 +593,32 @@ export class MockBackend implements Backend {
     )
   }
 
+  safetyStats(scanId: string): Promise<SafetyReport> {
+    this.getScan(scanId)
+    const map = new Map<string, SafetyStat>()
+    let safeBytes = 0
+    let carefulBytes = 0
+    for (const n of this.nodes) {
+      if (n.kind !== 'dir' || !n.safety) continue
+      const s = n.safety
+      // 同组嵌套目录只计最上层，与 core safety_stats 一致
+      const ps = n.parent >= 0 ? this.nodes[n.parent].safety : undefined
+      if (ps && ps.level === s.level && ps.category === s.category) continue
+      const key = `${s.level}\u0000${s.category}`
+      const st = map.get(key) ?? { category: s.category, level: s.level, bytes: 0, files: 0, count: 0 }
+      st.bytes += n.size
+      st.files += n.files
+      st.count += 1
+      map.set(key, st)
+      if (s.level === 'safe') safeBytes += n.size
+      else if (s.level === 'careful') carefulBytes += n.size
+    }
+    const stats = [...map.values()].sort(
+      (a, b) => b.bytes - a.bytes || LEVEL_ORDER[a.level] - LEVEL_ORDER[b.level] || a.category.localeCompare(b.category),
+    )
+    return Promise.resolve({ stats, safeBytes, carefulBytes })
+  }
+
   saveSnapshot(scanId: string): Promise<{ path: string }> {
     const scan = this.getScan(scanId)
     // shortcut: 快照是内存记录，不落盘；快照 UI 本版未做，等快照页面时接真实后端。
@@ -543,6 +645,11 @@ export class MockBackend implements Backend {
   openPath(_path: string, _reveal = false): Promise<void> {
     // 浏览器没有文件管理器，Mock 只记录一次，方便调试。
     if (import.meta.env.DEV) console.info('[mock] openPath', _path, _reveal)
+    return Promise.resolve()
+  }
+
+  openRulesFile(): Promise<void> {
+    if (import.meta.env.DEV) console.info('[mock] openRulesFile')
     return Promise.resolve()
   }
 

@@ -150,6 +150,29 @@ describe('top files and type stats', () => {
   })
 })
 
+describe('safety report and filter', () => {
+  it('aggregates safe and careful bytes without double counting nested dirs', async () => {
+    const rep = await backend.safetyStats(scanId)
+    expect(rep.safeBytes).toBeGreaterThan(0)
+    expect(rep.carefulBytes).toBeGreaterThan(0)
+    const levels = ['safe', 'careful', 'keep', 'unknown']
+    for (const s of rep.stats) expect(levels).toContain(s.level)
+    for (let i = 1; i < rep.stats.length; i++) {
+      expect(rep.stats[i - 1].bytes).toBeGreaterThanOrEqual(rep.stats[i].bytes)
+    }
+    expect(rep.stats.some((s) => s.category === '应用缓存' && s.level === 'safe')).toBe(true)
+  })
+
+  it('listChildren can keep only safe nodes', async () => {
+    const all = await list(0)
+    const safe = await list(0, { safety: ['safe'] })
+    expect(safe.total).toBe(all.items.filter((n) => n.safety === 'safe').length)
+    for (const n of safe.items) expect(n.safety).toBe('safe')
+    const maxCareful = await list(0, { maxLevel: 'careful' })
+    for (const n of maxCareful.items) expect(['safe', 'careful', 'unknown']).toContain(n.safety)
+  })
+})
+
 describe('delete simulation', () => {
   it('reports per-item success, repeat failure and guard rejections', async () => {
     const b = new MockBackend({ scanMs: 40 })

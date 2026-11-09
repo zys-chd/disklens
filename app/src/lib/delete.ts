@@ -5,6 +5,10 @@ export interface DeleteItem {
   name: string
   size: number
   path: string
+  safety?: 'safe' | 'careful' | 'keep' | 'unknown'
+  safetyReason?: string
+  safetyCommand?: string
+  safetyNeedsRoot?: boolean
 }
 
 export function basename(path: string): string {

@@ -4,12 +4,14 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use disklens_core::Tree;
+use disklens_core::{RuleSet, Tree};
 
 const KEEP_SCANS: usize = 3;
 
 pub struct ScanRecord {
     pub tree: RwLock<Option<Arc<Tree>>>,
+    /// 分类用的规则表，与树一起落库：NodeView 回查 category/reason 需要它
+    pub rules: RwLock<Option<Arc<RuleSet>>>,
     pub cancel: Arc<AtomicBool>,
     pub alive: AtomicBool,
 }
@@ -18,6 +20,7 @@ impl ScanRecord {
     fn new(cancel: Arc<AtomicBool>) -> Self {
         Self {
             tree: RwLock::new(None),
+            rules: RwLock::new(None),
             cancel,
             alive: AtomicBool::new(true),
         }
@@ -68,6 +71,12 @@ impl AppState {
         let rec = self.get(id)?;
         let tree = rec.tree.read().expect("tree poisoned").clone();
         tree.ok_or_else(|| format!("扫描尚未完成: {id}"))
+    }
+
+    pub fn rules(&self, id: &str) -> Result<Arc<RuleSet>, String> {
+        let rec = self.get(id)?;
+        let rules = rec.rules.read().expect("rules poisoned").clone();
+        rules.ok_or_else(|| format!("扫描尚未完成: {id}"))
     }
 }
 
