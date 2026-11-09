@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/disklens-core"]
+members = ["crates/disklens-core", "src-tauri"]
 resolver = "2"
 
 [workspace.package]

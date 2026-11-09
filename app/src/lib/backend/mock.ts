@@ -582,6 +582,10 @@ export class MockBackend implements Backend {
     return Promise.resolve({ os: 'linux', homeDir: ROOT_PATH })
   }
 
+  pickFolder(): Promise<string | null> {
+    return Promise.resolve(ROOT_PATH)
+  }
+
   onProgress(cb: (p: ScanProgress) => void): () => void {
     this.progressSubs.add(cb)
     return () => this.progressSubs.delete(cb)

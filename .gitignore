@@ -4,3 +4,5 @@ node_modules/
 dist/
 *.log
 .DS_Store
+# tauri 生成物（图标/权限 schema），按需重新生成
+src-tauri/gen/schemas/

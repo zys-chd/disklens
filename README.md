@@ -26,11 +26,14 @@
 # 前端（Mock 后端，浏览器直接可跑，无需 Rust）
 cd app && npm ci && npm run dev          # http://localhost:5173
 
-# 整个应用
-cd app && npx tauri dev
+# 整个应用（必须在仓库根调用：tauri-cli 只在含 tauri.conf.json 的目录工作）
+./app/node_modules/.bin/tauri dev
+
+# 构建当前平台制品
+./app/node_modules/.bin/tauri build      # 产物在 target/release/bundle/
 
 # 测试
-cargo test --workspace                   # Rust 核心 62 个测试
+cargo test --workspace                   # Rust 核心 67 个测试
 cd app && npx vitest run                  # 前端 38 个测试
 
 # 性能复测

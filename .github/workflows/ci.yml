@@ -38,8 +38,10 @@ jobs:
           npx vitest run
 
   # 三平台制品构建（个人自用：不签名、不发布 release，仅上传 artifact）
+  # 只在打 tag 或手动触发时跑：macOS runner 计费 10x，避免日常 push 烧光免费额度
   build:
     needs: test
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -77,8 +79,9 @@ jobs:
         working-directory: app
         run: npm ci
       - name: build
-        working-directory: app
-        run: npx tauri build ${{ matrix.args }}
+        # tauri-cli 只在含 tauri.conf.json 的目录（这里是仓库根下的 src-tauri 的上级=根）工作，
+        # 因此从仓库根调用 app/ 里的 cli，不能用 working-directory: app
+        run: ./app/node_modules/.bin/tauri build ${{ matrix.args }}
         env:
           # 未配置签名证书：构建产物为未签名包（个人自用）
           APPLE_SIGNING_IDENTITY: ""

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useScanStore } from '../store/scanStore'
+import { backend, isTauri } from '../lib/backend'
 import { formatBytes } from '../lib/format'
 import { Button } from './ui'
 import { SearchIcon } from './icons'
@@ -31,6 +33,34 @@ export function TopBar() {
   const selectedDrive = drives
     .filter((d) => path.startsWith(d.mountPoint))
     .sort((a, b) => b.mountPoint.length - a.mountPoint.length)[0]
+
+  const scan = (target: string) => {
+    setPath(target)
+    if (status !== 'scanning') void startScan(target)
+  }
+
+  const pickFolder = async () => {
+    const picked = await backend.pickFolder().catch(() => null)
+    if (picked) scan(picked)
+  }
+
+  // 窗口拖入文件夹直接开扫；over/leave 事件忽略
+  useEffect(() => {
+    if (!isTauri()) return
+    let off: (() => void) | undefined
+    let disposed = false
+    void getCurrentWindow()
+      .onDragDropEvent((e) => {
+        const dropped = e.payload.type === 'drop' ? e.payload.paths[0] : undefined
+        const s = useScanStore.getState()
+        if (dropped && s.status !== 'scanning') void s.startScan(dropped)
+      })
+      .then((fn) => (disposed ? fn() : (off = fn)))
+    return () => {
+      disposed = true
+      off?.()
+    }
+  }, [])
 
   return (
     <>
@@ -67,6 +97,10 @@ export function TopBar() {
           className="h-7 min-w-0 flex-1 rounded-md border border-line bg-panel2 px-2 font-mono text-xs text-fg outline-none placeholder:text-muted focus:border-accent"
           placeholder="/home/zys"
         />
+
+        <Button variant="default" onClick={() => void pickFolder()} title="选择要扫描的目录">
+          选目录
+        </Button>
 
         <Button variant="primary" disabled={status === 'scanning'} onClick={() => void startScan(path)}>
           {status === 'scanning' ? '扫描中…' : '扫描'}

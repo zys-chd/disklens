@@ -50,6 +50,7 @@ export const tauriBackend: Backend = {
   deletePermanent: (paths: string[], confirmText: string) =>
     invoke<OpResult>('delete_permanent', { paths, confirmText }),
   platformInfo: () => invoke<PlatformInfo>('platform_info'),
+  pickFolder: () => invoke<string | null>('pick_folder'),
   onProgress: (cb: (p: ScanProgress) => void) => subscribe('scan://progress', cb),
   onDone: (cb: (s: ScanSummary) => void) => subscribe('scan://done', cb),
   onError: (cb: (e: { scanId: string; message: string }) => void) => subscribe('scan://error', cb),

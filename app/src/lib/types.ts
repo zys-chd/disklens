@@ -122,6 +122,7 @@ export interface Backend {
   moveToTrash(paths: string[]): Promise<OpResult>
   deletePermanent(paths: string[], confirmText: string): Promise<OpResult>
   platformInfo(): Promise<PlatformInfo>
+  pickFolder(): Promise<string | null>
   onProgress(cb: (p: ScanProgress) => void): Unlisten
   onDone(cb: (s: ScanSummary) => void): Unlisten
   onError(cb: (e: { scanId: string; message: string }) => void): Unlisten
