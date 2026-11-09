@@ -59,6 +59,7 @@ cargo run --release --example scan -- ~
 - [架构设计](docs/03-架构设计.md)（含 IPC 契约）
 - [测试计划](docs/04-测试计划.md)
 - [实施计划](docs/05-实施计划.md)
+- [跨平台支持与验证矩阵](docs/06-跨平台支持.md)（哪些平台真跑过、哪些差距在哪）
 - [性能基准](docs/bench.md)
 
 ## 已知限制
@@ -66,4 +67,5 @@ cargo run --release --example scan -- ~
 - 大小口径为**逻辑大小**（`st_size`），与 `du` 默认的块占用口径相差约 3%（稀疏/取整），属预期。
 - `/proc`、`/sys` 内核伪文件系统无意义，默认排除。
 - 稀疏文件、APFS 克隆、Windows 压缩文件按逻辑大小计。
+- **Windows 下硬链接不去重**（稳定版 Rust 的 std 无法读取 file_index/nlink）：pnpm store、WinSxS 等场景占用会虚高；Linux/macOS 按 `(dev, ino)` 精确去重。
 - 未签名 macOS 包首次打开需 `xattr -dr com.apple.quarantine /Applications/DiskLens.app`。
