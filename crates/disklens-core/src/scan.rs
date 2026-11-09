@@ -119,6 +119,7 @@ pub fn scan_with<F: FnMut(Progress)>(
             entries,
             errors,
             cancelled: b.cancelled,
+            hardlink_dedup: HARDLINK_DEDUP,
         },
         safety: Vec::new(),
     };
@@ -359,14 +360,16 @@ fn hardlink_key(meta: &fs::Metadata) -> Option<(u64, u64)> {
     (meta.nlink() > 1).then(|| (meta.dev(), meta.ino()))
 }
 
-#[cfg(windows)]
-fn hardlink_key(meta: &fs::Metadata) -> Option<(u64, u64)> {
-    use std::os::windows::fs::MetadataExt;
-    meta.file_index()
-        .map(|idx| (meta.volume_serial_number().unwrap_or(0) as u64, idx))
-}
+/// 是否做了硬链接去重（上报给 UI，避免用户把虚高的大小当成真占用）
+#[cfg(unix)]
+const HARDLINK_DEDUP: bool = true;
+#[cfg(not(unix))]
+const HARDLINK_DEDUP: bool = false;
 
-#[cfg(not(any(unix, windows)))]
+// shortcut: Windows 稳定版 std 无法读 nlink / file_index（MetadataExt::file_index 仍是
+// unstable 的 windows_by_handle），这里不做去重 —— 硬链接会重复计数（pnpm store、WinSxS
+// 场景会虚高）。将来换 windows-sys GetFileInformationByHandle 或 std 稳定后再升级。
+#[cfg(not(unix))]
 fn hardlink_key(_meta: &fs::Metadata) -> Option<(u64, u64)> {
     None
 }

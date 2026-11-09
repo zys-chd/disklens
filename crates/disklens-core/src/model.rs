@@ -47,6 +47,8 @@ pub struct ScanStats {
     pub entries: u64,
     pub errors: u64,
     pub cancelled: bool,
+    /// 是否做了硬链接去重。Windows 稳定版 std 读不到 nlink/file_index，恒为 false
+    pub hardlink_dedup: bool,
 }
 
 #[derive(Clone, Debug)]

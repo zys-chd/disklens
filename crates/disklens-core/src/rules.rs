@@ -13,6 +13,7 @@ use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::model::{NodeId, NodeKind, Tree, NO_PARENT};
+use crate::path::{case_key, is_drive_abs, norm_path_str};
 
 /// `Safety::rule_idx` 的哨兵值：没有任何规则命中。
 pub const NO_RULE: u16 = u16::MAX;
@@ -527,19 +528,28 @@ pub fn default_rules() -> Vec<Rule> {
     ];
 
     if cfg!(windows) {
-        // 放在系统段：先于任何通用缓存规则
+        // 放在系统段：先于任何通用缓存规则。
+        // 顺序敏感：`C:\Windows\Temp*` 必须排在 `C:\Windows\*` 之前，否则祖先 keep 会把它锁死
         v.splice(
             0..0,
             [
                 r(r"C:\Windows", "系统", K, "Windows 系统目录", "不要动").exact(),
+                r(
+                    r"C:\Windows\Temp*",
+                    "临时文件",
+                    C,
+                    "系统临时文件（需管理员），删除前确认没有安装程序在跑",
+                    "按需清理",
+                )
+                .root(r"rmdir /s /q %SystemRoot%\Temp"),
                 r(r"C:\Windows\*", "系统", K, "Windows 系统目录", "不要动"),
                 r(r"C:\Program Files*", "系统", K, "已安装程序", "不要动"),
                 r(r"C:\ProgramData\*", "系统", K, "系统级程序数据", "不要动"),
                 r(
-                    r"%LOCALAPPDATA%\Temp\*",
+                    r"%LOCALAPPDATA%\Temp*",
                     "临时文件",
-                    S,
-                    "用户临时文件，自动清理",
+                    C,
+                    "用户临时文件，删除前确认没有安装程序在跑",
                     "可整目录删除",
                 ),
                 r(
@@ -551,13 +561,34 @@ pub fn default_rules() -> Vec<Rule> {
                 ),
             ],
         );
+        // 用户数据：放在缓存兜底之后，别抢走 %LOCALAPPDATA%\Temp 之类的具体规则
+        let at = v.iter().position(|x| x.pattern == "~").unwrap_or(v.len());
+        v.splice(
+            at..at,
+            [r(
+                r"%APPDATA%\*",
+                "配置",
+                K,
+                "程序配置（含登录态）",
+                "不要动",
+            )],
+        );
     }
     if cfg!(target_os = "macos") {
+        // 顺序敏感：`/Library/Caches/*` 必须排在 `/Library/*` 之前
         v.splice(
             0..0,
             [
                 r("/System", "系统", K, "macOS 系统目录", "不要动").exact(),
                 r("/System/*", "系统", K, "macOS 系统目录", "不要动"),
+                r(
+                    "/Library/Caches/*",
+                    "系统缓存",
+                    C,
+                    "系统级缓存，删除后首次启动会变慢",
+                    "按需清理",
+                )
+                .root("sudo rm -rf /Library/Caches/*"),
                 r("/Library/*", "系统", K, "系统级资源", "不要动"),
             ],
         );
@@ -579,16 +610,30 @@ pub fn default_rules() -> Vec<Rule> {
                 r(
                     "~/Library/Logs/*",
                     "系统日志",
-                    S,
+                    C,
                     "macOS 应用日志",
-                    "可整目录删除",
+                    "按时间清理",
                 ),
                 r(
                     "~/Library/Developer/Xcode/DerivedData/*",
                     "构建产物",
+                    S,
+                    "Xcode 构建缓存，自动重建",
+                    "可整目录删除",
+                ),
+                r(
+                    "~/Library/Developer/Xcode/iOS DeviceSupport/*",
+                    "设备支持",
                     C,
-                    "Xcode 构建缓存",
-                    "可重新构建",
+                    "iOS 设备符号文件，接设备时会重新生成（需重新下载）",
+                    "确认没有旧设备后再删",
+                ),
+                r(
+                    "~/Library/Application Support/*",
+                    "用户数据",
+                    K,
+                    "应用数据（含登录态/配置）",
+                    "不要动",
                 ),
                 r(
                     "*.dSYM",
@@ -724,8 +769,9 @@ impl RuleSet {
     }
 
     /// 在 `[0, bound)` 内匹配路径自身，返回 (首个命中, 首个可继承命中)。
+    /// `key` 必须已归一化（`norm_path_str`）；这里只补一次大小写折叠。
     /// `bound = None` 表示没有祖先命中，搜全部规则。
-    fn scan_one(&self, path: &Path, bound: Option<usize>) -> (Option<usize>, Option<usize>) {
+    fn scan_one(&self, key: &str, bound: Option<usize>) -> (Option<usize>, Option<usize>) {
         let lim = bound.unwrap_or(self.rules.len()).min(self.rules.len());
         let mut any: Option<usize> = None;
         let mut inh: Option<usize> = None;
@@ -738,10 +784,12 @@ impl RuleSet {
                 inh = Some(inh.map_or(ri, |f| f.min(ri)));
             }
         };
-        for i in self.full.matches(path) {
+        // 两边都归一化后再比：模式里的 `/` 与 Windows 路径里的 `\` 不再是两个世界
+        let key = case_key(key);
+        for i in self.full.matches(key.as_ref()) {
             add(i);
         }
-        if let Some(name) = path.file_name() {
+        if let Some(name) = key.rsplit('/').next().filter(|n| !n.is_empty()) {
             for i in self.base.matches(name) {
                 add(self.base_map[i] as usize);
             }
@@ -755,13 +803,28 @@ impl RuleSet {
     }
 
     /// 单点分类：从根逐级向下收敛，与 `classify_tree` 语义一致。
+    /// 祖先按**归一化字符串的分段**展开，所以 `C:\a\b` 在 Linux 上也有正确的祖先链。
     pub fn classify(&self, path: &Path) -> Safety {
-        let p = expand_path(path, &self.home);
+        let norm = norm_path_str(&expand_path(path, &self.home));
         let mut bound = None;
         let mut win = None;
-        let mut cur = PathBuf::new();
-        for comp in p.components() {
-            cur.push(comp);
+        let mut cur = String::new();
+        for (i, seg) in norm.split('/').enumerate() {
+            if seg.is_empty() {
+                // 前导 `/` 构成根（`/` 与 UNC 的 `//`）；其余空段是根路径的尾部残留
+                if i == 0 || (i == 1 && norm.starts_with("//")) {
+                    cur.push('/');
+                } else {
+                    continue;
+                }
+            } else if cur.is_empty() {
+                cur.push_str(seg); // 盘符 `C:`
+            } else {
+                if !cur.ends_with('/') {
+                    cur.push('/');
+                }
+                cur.push_str(seg);
+            }
             let (any, inh) = self.scan_one(&cur, bound);
             win = any.or(bound);
             bound = inh.or(bound);
@@ -792,40 +855,35 @@ fn glob(pattern: &str) -> Glob {
         .unwrap_or_else(|_| Glob::new("__disklens_never_match__").expect("常量 glob"))
 }
 
-/// `~` 展开为 home；Windows 下展开 `%VAR%`。
+/// `~` 展开为 home；`%VAR%` 用环境变量展开（未设置的保持字面量），最后归一化。
+/// 归一化对小写策略同时生效：模式与路径的匹配键形状必须一致。
 fn expand_pattern(p: &str, home: &Path) -> String {
-    let mut s = if p == "~" {
+    let expanded = if p == "~" {
         home.to_string_lossy().into_owned()
     } else if let Some(rest) = p.strip_prefix("~/") {
         home.join(rest).to_string_lossy().into_owned()
     } else {
-        p.to_string()
+        expand_env(p)
     };
     // shortcut: 相对模式（如 `*/node_modules`）保持原样按 fnmatch 匹配，
     // 不拼 home —— 否则 /tmp、外接盘上的同名目录会漏判（与旧版一致）。
-    if cfg!(windows) {
-        s = expand_env(&s).replace('\\', "/");
-    }
-    s
+    let norm = norm_path_str(Path::new(&expanded));
+    case_key(&norm).into_owned()
 }
 
 fn expand_path(path: &Path, home: &Path) -> PathBuf {
     let s = path.to_string_lossy();
-    let p = if s == "~" {
+    if s == "~" {
         home.to_path_buf()
     } else if let Some(rest) = s.strip_prefix("~/") {
         home.join(rest)
-    } else if path.is_absolute() {
+    } else if path.is_absolute() || is_drive_abs(&norm_path_str(path)) {
+        // `C:\a` 在 Linux 上不是「绝对路径」，但也不是相对当前目录
         path.to_path_buf()
     } else {
         std::env::current_dir()
             .map(|c| c.join(path))
             .unwrap_or_else(|_| path.to_path_buf())
-    };
-    if cfg!(windows) {
-        PathBuf::from(p.to_string_lossy().replace('\\', "/"))
-    } else {
-        p
     }
 }
 
@@ -874,7 +932,7 @@ fn walk(
     bound: Option<usize>,
     out: &mut [Safety],
 ) {
-    let (any, inh) = rs.scan_one(path, bound);
+    let (any, inh) = rs.scan_one(&norm_path_str(path), bound);
     let win = any.or(bound);
     out[id as usize] = rs.safety_for(win);
     let child_bound = inh.or(bound);

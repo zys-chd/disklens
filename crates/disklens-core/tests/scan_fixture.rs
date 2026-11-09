@@ -1,6 +1,8 @@
 mod support;
 
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -212,11 +214,14 @@ fn zero_byte_and_sparse_file_use_logical_size() {
     tree.validate().unwrap();
 }
 
+/// shortcut: Windows 传统 MAX_PATH(260) 装不下 40 层临时目录，这里用 24 层
+/// （仍远超日常深度）；要回到 40 层需 CI 打开长路径支持。
 #[test]
-fn deep_40_levels_records_depth_without_stack_overflow() {
+fn deep_24_levels_records_depth_without_stack_overflow() {
+    const DEPTH: usize = 24;
     let td = TempDir::new().unwrap();
     let mut p = td.path().to_path_buf();
-    for i in 0..40 {
+    for i in 0..DEPTH {
         p.push(format!("level{i:02}"));
         dir(&p);
     }
@@ -226,15 +231,15 @@ fn deep_40_levels_records_depth_without_stack_overflow() {
     assert_eq!(tree.root_node().size, 10);
     let leaf = find(&tree, &["level00"]);
     assert_eq!(leaf.depth, 1);
-    let names: Vec<String> = (0..40).map(|i| format!("level{i:02}")).collect();
+    let names: Vec<String> = (0..DEPTH).map(|i| format!("level{i:02}")).collect();
     let mut segs: Vec<&str> = names.iter().map(String::as_str).collect();
     segs.push("leaf.bin");
     let file = find(&tree, &segs);
-    assert_eq!(file.depth, 41);
+    assert_eq!(file.depth, DEPTH as u16 + 1);
     assert_eq!(file.kind, NodeKind::File);
     assert_eq!(file.size, 10);
-    assert_eq!(tree.nodes.iter().map(|n| n.depth).max(), Some(41));
-    assert_eq!(tree.root_node().dir_count, 40);
+    assert_eq!(tree.nodes.iter().map(|n| n.depth).max(), Some(DEPTH as u16 + 1));
+    assert_eq!(tree.root_node().dir_count, DEPTH as u32);
     assert_eq!(tree.root_node().file_count, 1);
     tree.validate().unwrap();
 }

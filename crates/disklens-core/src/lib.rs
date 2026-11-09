@@ -4,6 +4,7 @@ pub mod aggregate;
 pub mod guard;
 pub mod model;
 pub mod ops;
+pub mod path;
 pub mod query;
 pub mod rules;
 pub mod scan;
@@ -13,6 +14,7 @@ pub use aggregate::{aggregate, aggregate_tree};
 pub use guard::is_protected;
 pub use model::{ExtStat, Node, NodeId, NodeKind, ScanStats, Tree, NO_PARENT};
 pub use ops::{delete_permanent, move_to_trash, OpFailure, OpResult};
+pub use path::norm_path_str;
 pub use query::{
     children, node_path, top_files, type_stats, ChildPage, ChildQuery, SortBy, TopFile, TypeStat,
     MAX_LIMIT,
