@@ -39,25 +39,41 @@ fn rejects_system_root_and_drive_root() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn rejects_system_directories_and_their_children() {
+    let fx = fixture();
     for p in [
         "/usr", "/etc", "/bin", "/lib", "/var/lib", "/boot", "/System",
     ] {
         assert_eq!(
-            is_protected(Path::new(p), Path::new("/home/zys")),
+            is_protected(Path::new(p), &fx.home),
             Some("系统目录受保护"),
             "{p}"
         );
     }
     assert_eq!(
-        is_protected(Path::new("/etc/passwd"), Path::new("/home/zys")),
+        is_protected(Path::new("/etc/passwd"), &fx.home),
         Some("位于受保护路径内")
     );
     assert_eq!(
-        is_protected(Path::new("/usr/local/bin/tool"), Path::new("/home/zys")),
+        is_protected(Path::new("/usr/local/bin/tool"), &fx.home),
         Some("位于受保护路径内")
     );
+}
+
+// Windows 上没有 /usr，对应的系统目录是 C:\Windows / Program Files（CI 的 runner 上真实存在）
+#[cfg(windows)]
+#[test]
+fn rejects_windows_system_directories_and_their_children() {
+    let home = Path::new(r"C:\Users\zys");
+    for (p, want) in [
+        (r"C:\Windows", "Windows 系统目录受保护"),
+        (r"C:\Windows\System32", "位于受保护路径内"),
+        (r"C:\Program Files\SomeApp", "位于受保护路径内"),
+    ] {
+        assert_eq!(is_protected(Path::new(p), home), Some(want), "{p}");
+    }
 }
 
 #[test]
@@ -80,8 +96,13 @@ fn rejects_sensitive_subdirectories_and_anything_inside_them() {
     ] {
         let p = fx.home.join(name);
         assert_eq!(is_protected(&p, &fx.home), Some(reason), "{name}");
+        // 用真实存在的深层路径：护栏会 canonicalize，虚构路径在 Windows 上会比不出前缀
+        let deep = p.join("some").join("deep");
+        fs::create_dir_all(&deep).unwrap();
+        let file = deep.join("file.bin");
+        fs::write(&file, b"x").unwrap();
         assert_eq!(
-            is_protected(&p.join("some/deep/file.bin"), &fx.home),
+            is_protected(&file, &fx.home),
             Some("位于受保护路径内"),
             "{name} 子项"
         );
