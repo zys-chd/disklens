@@ -308,7 +308,7 @@ fn safety_stats_counts_nested_same_group_once() {
         dir("__pycache__", 3, 50, 1, vec![]),
         file("a.bin", 0, 50),
     ];
-    let mut tree = tree_of(nodes, "/home/u");
+    let mut tree = tree_of(nodes, &home().to_string_lossy());
     let rs = rules();
     classify_tree(&mut tree, &rs);
     assert_eq!(tree.safety.len(), tree.nodes.len());
@@ -395,7 +395,7 @@ fn classify_and_stats_50k_nodes_not_pathologically_slow() {
         nodes[0].file_count += files_per_project as u32;
         nodes[0].size += bytes;
     }
-    let mut tree = tree_of(nodes, "/home/u/Projects");
+    let mut tree = tree_of(nodes, &home().join("Projects").to_string_lossy());
     assert!(tree.nodes.len() >= 50_000);
 
     let rs = rules();
