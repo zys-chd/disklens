@@ -354,6 +354,27 @@ fn directories_without_files_aggregate_zero_but_count_dirs() {
 }
 
 #[test]
+fn exclude_matches_when_spelled_differently() {
+    // 回归：exclude 之前用 Path::starts_with 直接比，调用方给的短名/带 ./ 或尾部斜杠的
+    // 同一路径与 canonicalize 后的根对不上，排除会静默失效（Windows 上必现）
+    let td = TempDir::new().unwrap();
+    let root = std::fs::canonicalize(td.path()).unwrap();
+    write(&root.join("keep").join("a.bin"), 10);
+    write(&root.join("skip").join("b.bin"), 20);
+    let weird = root.join("skip").join(".").join("");
+    let tree = scan(
+        &root,
+        &ScanOptions {
+            exclude: vec![weird],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(tree.root_node().size, 10);
+    assert!(!all_names(&tree).iter().any(|n| n == "skip"));
+}
+
+#[test]
 fn exclude_prefix_skips_subtree() {
     let td = TempDir::new().unwrap();
     let root = td.path();

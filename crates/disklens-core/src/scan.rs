@@ -72,6 +72,14 @@ pub fn scan_with<F: FnMut(Progress)>(
     let mut b = Builder {
         nodes: Vec::new(),
         root_path: root_path.clone(),
+        exclude_keys: options
+            .exclude
+            .iter()
+            .map(|p| {
+                let canon = fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+                crate::path::norm_path_str(&canon)
+            })
+            .collect(),
         exts: vec![Box::from("")],
         ext_index: HashMap::new(),
         ext_stats: Vec::new(),
@@ -130,6 +138,9 @@ pub fn scan_with<F: FnMut(Progress)>(
 struct Builder<'a, F: FnMut(Progress)> {
     nodes: Vec<Node>,
     root_path: PathBuf,
+    /// 归一化为 `/` 分隔的规范化字符串，扫描时只需与归一化后的路径比前缀
+    /// （否则调用方给的 `RUNNER~1` 短名 / 符号链接路径与 canonicalize 后的根对不上，排除会静默失效）
+    exclude_keys: Vec<String>,
     exts: Vec<Box<str>>,
     ext_index: HashMap<Box<str>, u16>,
     ext_stats: Vec<ExtStat>,
@@ -166,7 +177,13 @@ impl<F: FnMut(Progress)> Builder<'_, F> {
         {
             return true;
         }
-        self.options.exclude.iter().any(|p| path.starts_with(p))
+        if self.exclude_keys.is_empty() {
+            return false;
+        }
+        let cand = crate::path::norm_path_str(path);
+        self.exclude_keys
+            .iter()
+            .any(|p| cand == *p || cand.starts_with(&format!("{p}/")))
     }
 
     fn check_cancel(&mut self) {
