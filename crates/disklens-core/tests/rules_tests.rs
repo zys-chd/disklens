@@ -9,6 +9,13 @@ use disklens_core::{
     ScanStats, Tree, NO_PARENT,
 };
 
+/// Windows 上 `/home/u` 是「盘符相对路径」，会被归一化加上 cwd 前缀，导致与规则里的
+/// 绝对模式对不上。所以测试用的 home 必须按平台给成真实绝对路径。
+#[cfg(windows)]
+fn home() -> PathBuf {
+    PathBuf::from(r"C:\Users\u")
+}
+#[cfg(not(windows))]
 fn home() -> PathBuf {
     PathBuf::from("/home/u")
 }
@@ -89,28 +96,30 @@ fn specific_cache_rule_beats_generic_cache_fallback() {
 #[test]
 fn user_config_kept_and_projects_build_artifacts_win_on_order() {
     let rs = rules();
-    let cfg = rs.classify(&p("/home/u/.config/x"));
+    let cfg = rs.classify(&home().join(".config/x"));
     assert_eq!(cfg.level, SafetyLevel::Keep);
     assert_eq!(rs.category(cfg), "配置");
 
     // ~/Projects 是 keep，但更靠前的 */target/debug 应赢（顺序优先）
-    let proj = rs.classify(&p("/home/u/Projects/a"));
+    let proj = rs.classify(&home().join("Projects/a"));
     assert_eq!(proj.level, SafetyLevel::Keep);
-    let target = rs.classify(&p("/home/u/Projects/a/target"));
+    let target = rs.classify(&home().join("Projects/a/target"));
     assert_eq!(target.level, SafetyLevel::Keep);
-    let debug = rs.classify(&p("/home/u/Projects/a/target/debug"));
+    let debug = rs.classify(&home().join("Projects/a/target/debug"));
     assert_eq!(debug.level, SafetyLevel::Careful);
     assert_eq!(rs.category(debug), "构建产物");
     assert_eq!(debug.rule_idx(), Some(idx(&rs, "*/target/debug")));
-    let deep = rs.classify(&p("/home/u/Projects/a/target/debug/x"));
+    let deep = rs.classify(&home().join("Projects/a/target/debug/x"));
     assert_eq!(deep.level, SafetyLevel::Careful);
     assert_eq!(deep.rule_idx(), debug.rule_idx());
 
     // 对照组：不在 Projects 下的 target/debug 同样按构建产物处理
-    let elsewhere = rs.classify(&p("/mnt/code/b/target/debug/y"));
+    let elsewhere = rs.classify(&home().join("code/b/target/debug/y"));
     assert_eq!(elsewhere.level, SafetyLevel::Careful);
 }
 
+/// `/usr` 是 unix 系统目录规则；Windows 的等价项（C:\Windows）在 platform_paths.rs 里测
+#[cfg(unix)]
 #[test]
 fn system_rule_keeps_site_packages_under_usr() {
     let rs = rules();
@@ -229,12 +238,13 @@ fn unknown_level_string_maps_to_unknown() {
     let path = tmp.path().join("rules.json");
     fs::write(
         &path,
-        r#"{"version":1,"rules":[{"pattern":"/x","category":"自定义","level":"SuperSafe"}]}"#,
+        r#"{"version":1,"rules":[{"pattern":"*.pyc","category":"自定义","level":"SuperSafe"}]}"#,
     )
     .unwrap();
     let rs = RuleSet::load_or_create(&path, &home());
     assert_eq!(rs.len(), 1);
-    let s = rs.classify(&p("/x"));
+    // 用 basename 规则匹配，避免依赖平台绝对路径形状
+    let s = rs.classify(&home().join("a/b/x.pyc"));
     assert_eq!(s.level, SafetyLevel::Unknown);
     assert_eq!(rs.category(s), "自定义");
     assert_eq!(s.rule_idx(), Some(0));
