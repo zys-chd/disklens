@@ -233,28 +233,31 @@ fn list_children_paginates_5000_files_without_overlap() {
 #[test]
 fn node_path_rebuilds_absolute_path_from_names() {
     let td = TempDir::new().unwrap();
-    let root = td.path();
-    write(&root.join("a b/中文#1%/x.bin"), 9);
-    let tree = scan_path(root);
+    // 期望值必须用规范化的根：Windows 上 TempDir 给的是 8.3 短名（RUNNER~1），
+    // 而扫描器存的是规范化后的长名（\\?\C:\Users\runneradmin\...）。两者都不是错的，只是口径不同。
+    let root = std::fs::canonicalize(td.path()).unwrap();
+    write(&root.join("a b").join("中文#1%").join("x.bin"), 9);
+    let tree = scan_path(&root);
     let id = support::find_id(&tree, &["a b", "中文#1%", "x.bin"]);
-    assert_eq!(node_path(&tree, id), root.join("a b/中文#1%/x.bin"));
-    assert_eq!(node_path(&tree, tree.root), root.to_path_buf());
+    let expect = root.join("a b").join("中文#1%").join("x.bin");
+    assert_eq!(node_path(&tree, id), expect);
+    assert_eq!(node_path(&tree, tree.root), root);
 }
 
 #[test]
 fn top_files_returns_largest_k_in_descending_order() {
     let td = TempDir::new().unwrap();
-    let root = td.path();
-    write(&root.join("a/one.bin"), 100);
-    write(&root.join("a/two.bin"), 5000);
-    write(&root.join("b/three.bin"), 300);
-    let tree = scan_path(root);
+    let root = std::fs::canonicalize(td.path()).unwrap();
+    write(&root.join("a").join("one.bin"), 100);
+    write(&root.join("a").join("two.bin"), 5000);
+    write(&root.join("b").join("three.bin"), 300);
+    let tree = scan_path(&root);
 
     let top = top_files(&tree, 2, None);
     assert_eq!(top.len(), 2);
     assert_eq!(top[0].name, "two.bin");
     assert_eq!(top[0].size, 5000);
-    assert_eq!(top[0].path, root.join("a/two.bin"));
+    assert_eq!(top[0].path, root.join("a").join("two.bin"));
     assert_eq!(top[1].name, "three.bin");
     assert_eq!(top[1].size, 300);
 

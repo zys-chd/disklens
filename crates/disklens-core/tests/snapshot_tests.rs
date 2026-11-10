@@ -26,10 +26,11 @@ fn snap(created: i64, files: Vec<(&str, u64)>, dirs: Vec<(&str, u64)>) -> Snapsh
 #[test]
 fn snapshot_roundtrip_preserves_totals_dirs_and_top_files() {
     let td = TempDir::new().unwrap();
-    let root = td.path();
-    write(&root.join("bigdir/big.bin"), 2 * 1024 * 1024);
-    write(&root.join("small/small.bin"), 1024);
-    let tree = scan_path(root);
+    // 规范化根：Windows 上 TempDir 给 8.3 短名，快照里存的是扫描器的规范化长名
+    let root = std::fs::canonicalize(td.path()).unwrap();
+    write(&root.join("bigdir").join("big.bin"), 2 * 1024 * 1024);
+    write(&root.join("small").join("small.bin"), 1024);
+    let tree = scan_path(&root);
 
     let dir = td.path().join("snapshots");
     let path = save_snapshot_to(&tree, &dir).unwrap();
@@ -69,10 +70,10 @@ fn snapshot_roundtrip_preserves_totals_dirs_and_top_files() {
 #[test]
 fn snapshots_include_root_path_and_only_big_dirs() {
     let td = TempDir::new().unwrap();
-    let root = td.path();
-    write(&root.join("big/a.bin"), 1 << 20);
-    write(&root.join("tiny/a.bin"), 10);
-    let tree = scan_path(root);
+    let root = std::fs::canonicalize(td.path()).unwrap();
+    write(&root.join("big").join("a.bin"), 1 << 20);
+    write(&root.join("tiny").join("a.bin"), 10);
+    let tree = scan_path(&root);
     let dir = td.path().join("snaps");
     let path = save_snapshot_to(&tree, &dir).unwrap();
     let loaded = load_snapshot(&path).unwrap();

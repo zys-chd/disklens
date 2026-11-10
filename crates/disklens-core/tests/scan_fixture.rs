@@ -375,11 +375,11 @@ fn exclude_prefix_skips_subtree() {
 #[test]
 fn path_with_space_hash_percent_and_chinese_roundtrips_via_node_path() {
     let td = TempDir::new().unwrap();
-    let root = td.path();
+    let root = std::fs::canonicalize(td.path()).unwrap();
     let d = "a b#c%中文";
     let f = "d e#1%.bin";
     write(&root.join(d).join(f), 5);
-    let tree = scan_path(root);
+    let tree = scan_path(&root);
     let id = find_id(&tree, &[d, f]);
     assert_eq!(disklens_core::node_path(&tree, id), root.join(d).join(f));
     assert_eq!(find(&tree, &[d]).size, 5);
