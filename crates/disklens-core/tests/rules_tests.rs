@@ -72,14 +72,16 @@ fn node_modules_careful_is_inherited_by_deep_file() {
 #[test]
 fn specific_cache_rule_beats_generic_cache_fallback() {
     let rs = rules();
-    let s = rs.classify(&p("/home/u/.cache/video-upscaler/tmp/a.bin"));
+    // 用 home() 拼路径而不是写死 "/home/u/..."：Windows 上 "/..." 是盘符相对路径，
+    // 会被归一化成 cwd 前缀，与规则里的绝对模式对不上（Linux 上两者等价）
+    let s = rs.classify(&home().join(".cache/video-upscaler/tmp/a.bin"));
     assert_eq!(s.level, SafetyLevel::Safe);
     assert_eq!(rs.category(s), "应用缓存");
     assert_eq!(s.rule_idx(), Some(idx(&rs, "~/.cache/video-upscaler*")));
     assert!(s.rule_idx().unwrap() < idx(&rs, "~/.cache/*"));
 
     // 未列出的应用缓存落到 ~/.cache/* 兜底
-    let generic = rs.classify(&p("/home/u/.cache/some-new-app/blob"));
+    let generic = rs.classify(&home().join(".cache/some-new-app/blob"));
     assert_eq!(generic.level, SafetyLevel::Safe);
     assert_eq!(generic.rule_idx(), Some(idx(&rs, "~/.cache/*")));
 }
@@ -124,6 +126,9 @@ fn system_rule_keeps_site_packages_under_usr() {
     assert_eq!(venv.rule_idx(), Some(idx(&rs, "*/site-packages")));
 }
 
+/// `/var/log`、`/var/cache` 是 unix 专属规则；Windows 上没有这些路径，
+/// 等价的 Windows 规则（%LOCALAPPDATA%\Temp 等）在 platform_paths.rs 里单独测。
+#[cfg(unix)]
 #[test]
 fn slash_star_crosses_separators_like_fnmatch() {
     let rs = rules();
@@ -168,14 +173,14 @@ fn pycache_matches_by_basename_anywhere() {
 #[test]
 fn home_wall_is_exact_only_and_not_inherited_by_downloads() {
     let rs = rules();
-    assert_eq!(rs.classify(&p("/home/u")).level, SafetyLevel::Keep);
-    assert_eq!(rs.category(rs.classify(&p("/home/u"))), "石墙");
+    assert_eq!(rs.classify(&home()).level, SafetyLevel::Keep);
+    assert_eq!(rs.category(rs.classify(&home())), "石墙");
 
-    let downloads = rs.classify(&p("/home/u/Downloads"));
+    let downloads = rs.classify(&home().join("Downloads"));
     assert_eq!(downloads.level, SafetyLevel::Unknown);
     assert_eq!(downloads.rule_idx(), None);
 
-    let foo = rs.classify(&p("/home/u/Downloads/foo"));
+    let foo = rs.classify(&home().join("Downloads/foo"));
     assert_eq!(foo.level, SafetyLevel::Unknown);
     assert_eq!(rs.category(foo), "下载");
     assert_eq!(foo.rule_idx(), Some(idx(&rs, "~/Downloads/*")));
@@ -414,7 +419,7 @@ fn classify_and_stats_50k_nodes_not_pathologically_slow() {
 fn classify_absolute_and_tilde_paths_agree() {
     let rs = rules();
     let a = rs.classify(Path::new("~/.config/x"));
-    let b = rs.classify(&p("/home/u/.config/x"));
+    let b = rs.classify(&home().join(".config/x"));
     assert_eq!(a, b);
     assert_eq!(a.level, SafetyLevel::Keep);
 }
